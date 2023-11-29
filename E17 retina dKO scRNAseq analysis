@@ -1,1 +1,363 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Oct  5 10:12:51 2021
 
+@author: boulanb
+"""
+
+import os
+import numpy as np
+import pandas as pd
+import scanpy as sc
+from bioinfokit import analys, visuz
+
+sc.settings.verbosity = 3             # verbosity: errors (0), warnings (1), info (2), hints (3)
+sc.logging.print_header()
+sc.settings.set_figure_params(dpi=300, facecolor='white')
+
+datapath1 = 'myPATH/RAW/E17-rtn-dhet/Cellranger/outs/raw_feature_bc_matrix/'
+datapath2 = 'myPATH/RAW/E17-rtn-dko/Cellranger/outs/raw_feature_bc_matrix/'
+
+adata1 = sc.read_10x_mtx(datapath1,var_names='gene_symbols', cache=True)  
+adata1.var_names_make_unique()
+                   
+adata2 = sc.read_10x_mtx(datapath2,var_names='gene_symbols', cache=True)  
+adata2.var_names_make_unique()
+
+adata = adata1.concatenate(adata2, batch_categories=['dhet', 'dko'], join='outer')
+del adata1, adata2
+
+#Show those genes that yield the highest fraction of counts in each single cells, across all cells.
+
+#------low quality cell filtering------------------------------------------------------------------------------------------------------------------
+sc.pp.filter_cells(adata, min_genes=200) #filter the cells with less than 200 genes
+sc.pp.filter_genes(adata, min_cells=3)  # filter genes express in less than 30 (normaly set at 3 in scanpy tuto but I have 40000 cells versus 2700 in the tuto)
+
+sc.pl.highest_expr_genes(adata, n_top=20, )
+
+#------mitochondrial genes------------------------------------------------------------------------------------------------------------------
+adata.var['mt'] = adata.var_names.str.startswith('mt-')  # annotate the group of mitochondrial genes as 'mt'
+sc.pp.calculate_qc_metrics(adata, qc_vars=['mt'], percent_top=None, log1p=False, inplace=True)
+
+adata.var['rps'] = adata.var_names.str.startswith('Rps')  # annotate the group of mitochondrial genes as 'mt'
+sc.pp.calculate_qc_metrics(adata, qc_vars=['rps'], percent_top=None, log1p=False, inplace=True)
+adata.var['rpl'] = adata.var_names.str.startswith('Rpl')  # annotate the group of mitochondrial genes as 'mt'
+sc.pp.calculate_qc_metrics(adata, qc_vars=['rpl'], percent_top=None, log1p=False, inplace=True)
+sc.pl.violin(adata, ['n_genes_by_counts', 'total_counts', 'pct_counts_mt','pct_counts_rps','pct_counts_rpl'],
+             jitter=0.4, multi_panel=True)
+
+#------Further low quality cell filtering------------------------------------------------------------------------------------------------------
+
+sc.pl.scatter(adata, x='total_counts', y='pct_counts_mt')
+sc.pl.scatter(adata, x='total_counts', y='n_genes_by_counts')
+
+adata = adata[adata.obs.n_genes_by_counts < 5000, :]
+adata = adata[adata.obs.pct_counts_mt < 10, :]
+sc.pp.filter_cells(adata, min_counts=1300)
+adata = adata[adata.obs.n_genes_by_counts > 1000, :]
+
+sc.pl.violin(adata, ['n_genes_by_counts', 'total_counts', 'pct_counts_mt','pct_counts_rps','pct_counts_rpl'],
+             jitter=0.4, multi_panel=True)
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+sc.pp.normalize_total(adata, target_sum=1e4)
+sc.pp.log1p(adata)
+sc.pp.highly_variable_genes(adata, min_mean=0.0125, max_mean=3, min_disp=0.5)
+sc.pl.highly_variable_genes(adata)
+adata.raw = adata
+adata = adata[:, adata.var.highly_variable]
+
+#Normalize sequenthing depth for batch effect.......---------------------------------------------------------------------------------------------------------------------------
+
+sc.pp.regress_out(adata, ['total_counts', 'pct_counts_mt'])
+sc.pp.scale(adata, max_value=10)
+sc.tl.pca(adata, svd_solver='arpack')
+sc.pl.pca(adata, color='Pax6')
+sc.pl.pca_variance_ratio(adata, log=True)
+sc.pp.neighbors(adata, n_neighbors=15)
+sc.tl.umap(adata)
+sc.tl.leiden(adata, resolution=0.8)
+sc.pl.umap(adata, color='leiden',legend_loc='on data')
+sc.pl.umap(adata, color='Pax6')
+
+sc.tl.rank_genes_groups(temp, 'leiden', method='wilcoxon', pts=True)
+sc.pl.rank_genes_groups(temp, n_genes=25, sharey=False)
+variable_genes_names = pd.DataFrame(adata.uns['rank_genes_groups']['names'])
+variable_genes_log = pd.DataFrame(adata.uns['rank_genes_groups']['logfoldchanges'])
+variable_genes_pv_adj = pd.DataFrame(adata.uns['rank_genes_groups']['pvals_adj'])
+variable_genes_pts = pd.DataFrame(adata.uns['rank_genes_groups']['pts'])
+variable_genes = pd.concat([variable_genes_names, variable_genes_log, variable_genes_pv_adj,variable_genes_pts], axis = 1)
+variable_genes.to_csv('variable_genes_dHET-dKO-merge_leiden-50pcs-clusters_wilcox.csv', sep=';')
+
+#--------Cell types definition-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+marker_genes = {'Early RPC': ['Sfrp2','Foxp1','Six6','Fgf15','Mest'],
+                'Late RPC': ['Ccnd1','Cdk1','Vsx2','Six3','Sox9','Hes1','Nfia','Nfib','Klf9'],
+                'Neurogenic cells': ['Atoh7','Neurod1','Neurog2'],
+                'Photoreceptors': ['Crx'],
+                'Cones': ['Gnat2','Opn1sw','Opn1mw','Thrb'],
+                'Rods' : ['Rho','Nrl'],
+                'Horizontals': ['Lhx1','Onecut1','Onecut2','Lhx1os'],
+                'RGC': ['Rbpms','Isl1','Pou4f2','Sox11','Atoh7','Nefl','Opn4'],
+                'Amacrines': ['Tfap2b','Sox11','Pax6','Sox4'],
+                'Müller G.': ['Rlbp1','Aqp4','Abca8a','Clu','S100a16','Glul','Dkk3'],
+                'Bipolars': ['Otx2','Vsx2','Cabp5','Pcp2','Trpm1'],
+                'RPE-Early margin': ['Mitf', 'Ccnd2', 'Msx1', 'H19']
+                }
+marker_matches = sc.tl.marker_gene_overlap(adata, marker_genes,normalize='reference', top_n_markers = 20)
+marker_matches.to_csv("marker_matches_dHET-dKO-merge_leiden-clusters_wilcox_20genes.csv", sep=';')   
+marker_matches = sc.tl.marker_gene_overlap(adata, marker_genes,normalize='reference', top_n_markers = 100)
+marker_matches.to_csv("marker_matches_dHET-dKO-merge_leiden-clusters_wilcox_100genes.csv", sep=';')
+marker_matches = sc.tl.marker_gene_overlap(adata, marker_genes,normalize='reference', top_n_markers = 500)
+marker_matches.to_csv("marker_matches_dHET-dKO-merge_leiden-clusters_wilcox_500genes.csv", sep=';')
+
+#--------Clusters Cell number count-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+cell_number = adata.obs.groupby(["leiden", "batch"]).apply(len)
+cell_number.to_csv('cell_type_number.csv', sep=';')
+
+#---------DEG dHET vs dKO---------------------------------------------------------------------------------------------------------------------------------------------
+sc.tl.rank_genes_groups(adata, 'batch', method='wilcoxon', pts=True)
+sc.pl.rank_genes_groups(adata, n_genes=25, sharey=False)
+variable_genes_names = pd.DataFrame(adata.uns['rank_genes_groups']['names'])
+variable_genes_log = pd.DataFrame(adata.uns['rank_genes_groups']['logfoldchanges'])
+variable_genes_pv_adj = pd.DataFrame(adata.uns['rank_genes_groups']['pvals_adj'])
+variable_genes_pts = pd.DataFrame(adata.uns['rank_genes_groups']['pts'])
+variable_genes = pd.concat([variable_genes_names, variable_genes_log, variable_genes_pv_adj,variable_genes_pts], axis = 1)
+variable_genes.to_csv('variable_genes_dHET-vs-dKO-merge_leiden-50pcs-clusters_wilcox.csv', sep=';')
+
+#---------removal of remaining low quality cluster number 16 ---------------------------------------------------------------------------------------------------------------------------------------------
+cluster2annotation = {
+    '0':'1',
+    '1':'1',
+    '2':'1',
+    '3':'1',
+    '4':'1',
+    '5':'1',
+    '6':'1',
+    '7':'1',
+    '8':'1',
+    '9':'1',
+    '10':'1',
+    '11':'1',
+    '12':'1',
+    '13':'1',    
+    '14':'1',
+    '15':'1',
+    '16':'0',
+    '17':'1'
+}
+adata.obs['temp'] = adata.obs['leiden'].map(cluster2annotation).astype('category')
+adata = adata[adata.obs['temp'] == '1']
+sc.pl.umap(adata, color='temp', legend_loc='right margin', legend_fontsize ='xx-small')
+
+#---------DEG dHET vs dKO for each clusters---------------------------------------------------------------------------------------------------------------------------------------------
+for i in adata.obs['leiden'].unique():
+                temp = adata[adata.obs['leiden'] == i]
+                sc.tl.rank_genes_groups(temp, groupby='batch',method='t-test')
+                variable_genes_names = pd.DataFrame(temp.uns['rank_genes_groups']['names'])
+                variable_genes_log = pd.DataFrame(temp.uns['rank_genes_groups']['logfoldchanges'])
+                variable_genes_pv_adj = pd.DataFrame(temp.uns['rank_genes_groups']['pvals_adj'])
+                variable_genes = pd.concat([variable_genes_names, variable_genes_log, variable_genes_pv_adj], axis = 1)
+                variable_genes.to_csv('Cell_type_variable_genes_dhet-vs-dko_leiden_wilcox_'+i+'.csv', sep=';')
+                del(temp)
+
+#---------cell density in UMAP---------------------------------------------------------------------------------------------------------------------------------------------
+
+sc.tl.embedding_density(adata, groupby='batch')
+sc.pl.embedding_density(adata, groupby='batch',bg_dotsize=30,fg_dotsize=50)               
+
+# Clusters annotation.---------------------------------
+cluster1annotation = {
+    '0':'0_RPC-1',
+    '1':'1_RPC-2',
+    '2':'0_RPC-1',
+    '3':'2_Amacrines',
+    '4':'1_RPC-2',
+    '5':'3_RGC',
+    '6':'6_Neurogenic-1',
+    '7':'2_Amacrines',
+    '8':'7_Differentiating P.R.',
+    '9':'8_RPC-3',
+    '10':'9_Ph.Receptors',
+    '11':'10_Neurogenic-2',
+    '12':'11_RPC-4',
+    '13':'2_Amacrines',    
+    '14':'3_RGC',
+    '15':'3_RGC',
+    '16':'13_Horizontals'
+}
+adata.obs['cell_type_1'] = adata.obs['leiden'].map(cluster1annotation).astype('category')
+sc.pl.umap(adata, color='cell_type_1', legend_loc='right margin', legend_fontsize ='xx-small')
+
+#---------Heatmap of clusters cell type markers---------------------------------------------------------------------------------------------------------------------------------------------
+marker_genes_dict = {'RPC': ['Fgf15','Ccnd1','Cdk1','Vsx2','Sox9','Hes1'],
+                'Neurogenic cells': ['Atoh7','Neurog2'],
+                'Photoreceptors': ['Crx'],
+                'Cones': ['Gnat2','Thrb'],
+                'Rods' : ['Rho','Nrl'],
+                'Horizontals': ['Lhx1','Onecut1','Onecut2'],
+                'RGC': ['Rbpms','Isl1','Nefl'],
+                'Amacrines': ['Tfap2b','Pax6','Sox4'],
+                'Müller G.': ['Rlbp1','Aqp4','Clu'],
+                'Bipolars': ['Cabp5','Pcp2','Trpm1'],
+                
+                }
+ax = sc.pl.heatmap(temp, marker_genes_dict, groupby='cell_type_1', cmap='viridis', dendrogram=False)
+
+#Volcano ploting RPC1 vs RPC2 --------------------------------------------------------------------------------------------------------------------------------------------
+
+sc.tl.rank_genes_groups(adata, 'cell_type_1',groups=['1_RPC-2'], reference='0_RPC-1', method='wilcoxon', pts=True)
+variable_genes_names = pd.DataFrame(adata.uns['rank_genes_groups']['names'])
+variable_genes_log = pd.DataFrame(adata.uns['rank_genes_groups']['logfoldchanges'])
+variable_genes_pv_adj = pd.DataFrame(adata.uns['rank_genes_groups']['pvals_adj'])
+variable_genes_pts = pd.DataFrame(adata.uns['rank_genes_groups']['pts'])
+variable_genes = pd.concat([variable_genes_names, variable_genes_log, variable_genes_pv_adj], axis = 1)
+variable_genes.to_csv('variable_genes_cell_type_2_RPC1-vs-RPC2_wilcox.csv', sep=';')
+    
+name_8 = pd.DataFrame(variable_genes_names['1_RPC-2'])
+name_8 = name_8.rename(columns={"1_RPC-2": "name"})
+log_8 = pd.DataFrame(variable_genes_log['1_RPC-2'])
+log_8 = log_8.rename(columns={"1_RPC-2": "log2FC"})
+pva_8 = pd.DataFrame(variable_genes_pv_adj['1_RPC-2'])
+pva_8 = pva_8.rename(columns={"1_RPC-2": "pv-adj"})
+variable_genes_8 = pd.concat([name_8, log_8, pva_8], axis = 1)
+
+#----Ribosomal-------------------------------------------------------------------
+visuz.GeneExpression.volcano(df=variable_genes_8, lfc='log2FC', pv='pv-adj', xlm=(-3,3,1),ylm=(0,150,50),geneid="name", genenames=("Rpl36","Rpl37a","Rpl37","Rpl41","Rpl39","Rpl36","Rps21","Gm10076"), lfc_thr=(0.5, 0.5), pv_thr=(0.05, 0.05))
+#----Mito -------------------------------------------------------------------
+visuz.GeneExpression.volcano(df=variable_genes_8, lfc='log2FC', pv='pv-adj', xlm=(-3,3,0.5),ylm=(0,40,10),geneid="name", genenames=("mt-Atp8","Tomm6","mt-Nd6","Tomm7","Cox6b1","Tomm6","Cox6c",'Atp5e','Romo1','Ndufa3'), lfc_thr=(0.3, 0.3), pv_thr=(0.05, 0.05), gstyle=2)
+#-----Mitotic spindle------------------------------------------------------------------
+visuz.GeneExpression.volcano(df=variable_genes_8, lfc='log2FC', pv='pv-adj', xlm=(-3,3,0.5),ylm=(0,40,10),geneid="name", genenames=("Cenpe","Cenpa","Ccnb2","Tuba1c","Dync1h1","Kif13a","Pcnt",'Ninl','Cetn2','Numa1','Gnai2','Gnai3'), lfc_thr=(0.3, 0.3), pv_thr=(0.05, 0.05), gstyle=2)
+
+#-----Notch------------------------------------------------------------------
+visuz.GeneExpression.volcano(df=variable_genes_8, lfc='log2FC', pv='pv-adj', xlm=(-1.5,1.5,0.5),ylm=(0,20,10),geneid="name", genenames=("Notch1","Notch2","Dll1","Hes6","Mfng","Insm1","Hes1"), lfc_thr=(0.25, 0.25), pv_thr=(0.05, 0.05), gstyle=2)
+
+#-----Wnt Fgf Tcf------------------------------------------------------------------
+visuz.GeneExpression.volcano(df=variable_genes_8, lfc='log2FC', pv='pv-adj', xlm=(-1.5,1.5,0.5),ylm=(0,40,10),geneid="name", genenames=("Dkk3","Sparc","Rrm2","Fgf15","Fgf9","Gpc6","Id2","Id3","Tcf19"), lfc_thr=(0.3, 0.3), pv_thr=(0.05, 0.05), gstyle=2)
+
+#-----Hippo------------------------------------------------------------------
+visuz.GeneExpression.volcano(df=variable_genes_8, lfc='log2FC', pv='pv-adj', xlm=(-1.5,1.5,0.5),ylm=(0,20,10),geneid="name", genenames=("Ywhae","Ywhaz","Ywhag","Tead2","Nedd8"), lfc_thr=(0.25, 0.25), pv_thr=(0.05, 0.05), gstyle=2)
+
+#-----BLANK------------------------------------------------------------------
+visuz.GeneExpression.volcano(df=variable_genes_8, lfc='log2FC', pv='pv-adj', xlm=(-1.5,1.5,0.5),ylm=(0,20,10), lfc_thr=(0.25, 0.25), pv_thr=(0.05, 0.05), gstyle=2)
+
+
+
+#------------------------------------------------------------------------------------------------------------------------------------
+#---------------------------------Volcano RPC dHET vs dKO---------------------------------------------------------------------------------------------------
+#------------------------------------------------------------------------------------------------------------------------------------
+
+cluster2annotation = {
+    '0':'RPC',
+    '1':'RPC',
+    '2':'RPC',
+    '4':'RPC',
+    '9':'RPC',
+    '12':'RPC'    
+}
+adata.obs['temp'] = adata.obs['leiden'].map(cluster2annotation).astype('category')
+sc.pl.umap(temp, color='temp2', legend_loc='right margin', legend_fontsize ='xx-small')
+
+temp = adata[adata.obs['cell_type_2'] == 'RPC']
+sc.tl.rank_genes_groups(temp, groupby='batch',method='t-test_overestim_var')
+variable_genes_names = pd.DataFrame(temp.uns['rank_genes_groups']['names'])
+variable_genes_log = pd.DataFrame(temp.uns['rank_genes_groups']['logfoldchanges'])
+variable_genes_pv_adj = pd.DataFrame(temp.uns['rank_genes_groups']['pvals_adj'])
+variable_genes = pd.concat([variable_genes_names, variable_genes_log, variable_genes_pv_adj], axis = 1)
+variable_genes.to_csv('RPC_variable_genes_dhet-vs-dko_leiden_ttestovervar.csv', sep=';')
+del(temp)
+    
+name = pd.DataFrame(variable_genes_names['RPC'])
+name = name.rename(columns={"RPC": "name"})
+log = pd.DataFrame(variable_genes_log['RPC'])
+log = log.rename(columns={"RPC": "log2FC"})
+pva = pd.DataFrame(variable_genes_pv_adj['RPC'])
+pva = pva.rename(columns={"RPC": "pv-adj"})
+variable_genes = pd.concat([name, log, pva], axis = 1)
+
+visuz.GeneExpression.volcano(df=variable_genes, lfc='log', pv='pva', xlm=(-2,2,1),ylm=(0,80,10),
+                             geneid="name", lfc_thr=(0.10, 0.10), pv_thr=(0.06, 0.06),sign_line=True, dim=(5,5), r=600, axtickfontsize=12)
+
+#---HIPPO PATHWAY GENES RPC dHET vs dKO---------------------------------------------------
+visuz.GeneExpression.volcano(df=variable_genes, lfc='log', pv='pva', xlm=(-2,2,1),ylm=(0,80,10),
+                             geneid="name", lfc_thr=(0.10, 0.10), pv_thr=(0.06, 0.06),sign_line=True, dim=(5,5), r=600, axtickfontsize=12,
+                             genenames=("Id1","Ywhae","Bmp7","Ppp2r1a","Ppp1cb","Ywhag","Fzd3","Dvl3","Ctnnb1"), gstyle=2)
+ 
+#--ZOOM-HIPPO PATHWAY GENES RPC dHET vs dKO---------------------------------------------------
+visuz.GeneExpression.volcano(df=variable_genes, lfc='log', pv='pva', xlm=(-2,2,1),ylm=(0,11,5),
+                             geneid="name", lfc_thr=(0.10, 0.10), pv_thr=(0.06, 0.06),sign_line=True, dim=(5,5), r=600, axtickfontsize=12)
+
+
+visuz.GeneExpression.volcano(df=variable_genes, lfc='log', pv='pva', xlm=(-2,2,1),ylm=(0,11,5),
+                             geneid="name", lfc_thr=(0.10, 0.10), pv_thr=(0.06, 0.06),sign_line=True, dim=(5,5), r=600, axtickfontsize=12,
+                             genenames=("Id1","Ywhae","Bmp7","Ppp2r1a","Ppp1cb","Ywhag","Fzd3","Dvl3","Ctnnb1"), gstyle=2)
+       
+#---NOTCH PATHWAY GENES RPC dHET vs dKO---------------------------------------------------------------------------------------------------------------------------------
+visuz.GeneExpression.volcano(df=variable_genes, lfc='log', pv='pva', xlm=(-2,2,1),ylm=(0,80,10),
+                             geneid="name", lfc_thr=(0.10, 0.10), pv_thr=(0.05, 0.05),sign_line=True, dim=(5,5), r=600, axtickfontsize=12,
+                             genenames=("Notch2","Hes1","Psenen","Tle4","Dvl3"), gstyle=2)
+
+#--ZOOM-NOTCH PATHWAY GENES RPC dHET vs dKO---------------------------------------------------------------------------------------------------------------------------------
+visuz.GeneExpression.volcano(df=variable_genes, lfc='log', pv='pva', xlm=(-2,2,1),ylm=(0,11,5),
+                             geneid="name", lfc_thr=(0.10, 0.10), pv_thr=(0.06, 0.06),sign_line=True, dim=(5,5), r=600, axtickfontsize=12,
+                             genenames=("Notch2","Hes1","Psenen","Tle4","Dvl3"), gstyle=2)
+
+#---WNT PATHWAY GENES RPC dHET vs dKO---------------------------------------------------------------------------------------------------------------------------------
+visuz.GeneExpression.volcano(df=variable_genes, lfc='log', pv='pva', xlm=(-2,2,1),ylm=(0,80,10),
+                             geneid="name", lfc_thr=(0.10, 0.10), pv_thr=(0.05, 0.05),sign_line=True, dim=(5,5), r=600, axtickfontsize=12,
+                             genenames=("Bambi","Serpinf1","Jun","Ccnd1","Rbx1","Cacybp","Ctbp1","Cby1","Crebbp","Fzd3","Ctnnb1","Ruvbl1","Ccdc88c"), gstyle=2)
+
+#--ZOOM-WNT PATHWAY GENES RPC dHET vs dKO---------------------------------------------------------------------------------------------------------------------------------
+visuz.GeneExpression.volcano(df=variable_genes, lfc='log', pv='pva', xlm=(-2,2,1),ylm=(0,11,5),
+                             geneid="name", lfc_thr=(0.10, 0.10), pv_thr=(0.06, 0.06),sign_line=True, dim=(5,5), r=600, axtickfontsize=12,
+                             genenames=("Bambi","Serpinf1","Jun","Ccnd1","Rbx1","Cacybp","Ctbp1","Cby1","Crebbp","Fzd3","Ctnnb1","Ruvbl1","Ccdc88c"), gstyle=2)
+
+
+#------------------------------------------------------------------------------------------------------------------------------------
+#Volcano RPC1 vs RPC2......---------------------------------
+#------------------------------------------------------------------------------------------------------------------------------------
+#----------------------------------
+datapath = 'myPATH/variable_genes_RPC1-vs-RPC2_t-test_overestim_var.csv'
+data = pd.read_csv(datapath, sep=';')
+
+visuz.GeneExpression.volcano(df=data, lfc='LogFC', pv='adj-pv', xlm=(-2,2,1),ylm=(0,60,10),
+                             geneid="Gene", lfc_thr=(0.10, 0.10), pv_thr=(0.05, 0.05),sign_line=True, dim=(5,5), r=600, axtickfontsize=12)
+
+
+#---HIPPO PATHWAY GENES RPC1 vs RPC2--------------------------------------------------
+visuz.GeneExpression.volcano(df=data, lfc='LogFC', pv='adj-pv', xlm=(-2,2,1),ylm=(0,60,10),
+                             geneid="Gene", lfc_thr=(0.10, 0.10), pv_thr=(0.05, 0.05),sign_line=True, dim=(5,5), r=600, axtickfontsize=12,
+                             genenames=("Tgfb2","Rassf1","Id1","Id2","Ywhae","Ywhaz","Ppp1ca","Ywhaq","Fzd3","Ctnnb1","Ppp2ca","Ywhab","Ppp2r1a","Tead2","Trp53bp2","Limd1","Ppp1cb"), gstyle=2)
+#---ZOOM HIPPO PATHWAY GENES RPC1 vs RPC2--------------------------------------------------
+visuz.GeneExpression.volcano(df=data, lfc='LogFC', pv='adj-pv', xlm=(-2,2,1),ylm=(0,21,5),
+                             geneid="Gene", lfc_thr=(0.10, 0.10), pv_thr=(0.05, 0.05),sign_line=True, dim=(5,5), r=600, axtickfontsize=12,
+                             genenames=("Tgfb2","Rassf1","Id1","Id2","Ywhae","Ywhaz","Ppp1ca","Ywhaq","Fzd3","Ctnnb1","Ppp2ca","Ywhab","Ppp2r1a","Tead2","Trp53bp2","Limd1","Ppp1cb"), gstyle=2)
+
+visuz.GeneExpression.volcano(df=data, lfc='LogFC', pv='adj-pv', xlm=(-2,2,1),ylm=(0,21,5),
+                             geneid="Gene", lfc_thr=(0.10, 0.10), pv_thr=(0.05, 0.05),sign_line=True, dim=(5,5), r=600, axtickfontsize=12)
+#---ZOOM-2 HIPPO PATHWAY GENES RPC1 vs RPC2--------------------------------------------------
+visuz.GeneExpression.volcano(df=data, lfc='LogFC', pv='adj-pv', xlm=(-1,1,0.5),ylm=(0,5,1),
+                             geneid="Gene", lfc_thr=(0.10, 0.10), pv_thr=(0.05, 0.05),sign_line=True, dim=(5,5), r=600, axtickfontsize=12,
+                             genenames=("Tgfb2","Rassf1","Id1","Id2","Ywhae","Ywhaz","Ppp1ca","Ywhaq","Fzd3","Ctnnb1","Ppp2ca","Ywhab","Ppp2r1a","Tead2","Trp53bp2","Limd1","Ppp1cb"), gstyle=2)
+
+visuz.GeneExpression.volcano(df=data, lfc='LogFC', pv='adj-pv', xlm=(-1,1,0.5),ylm=(0,5,1),
+                             geneid="Gene", lfc_thr=(0.10, 0.10), pv_thr=(0.05, 0.05),sign_line=True, dim=(5,5), r=600, axtickfontsize=12)
+
+#---NOTCH PATHWAY GENES RPC1 vs RPC2--------------------------------------------------
+visuz.GeneExpression.volcano(df=data, lfc='LogFC', pv='adj-pv', xlm=(-2,2,1),ylm=(0,60,10),
+                             geneid="Gene", lfc_thr=(0.10, 0.10), pv_thr=(0.05, 0.05),sign_line=True, dim=(5,5), r=600, axtickfontsize=12,
+                             genenames=("Itch","Dtx3","Hes1","Dll1","Mfng","Ctbp1","Notch1","Rbpj","Notch2","Dll4","Crebbp","Ncor2","Dll3","Psenen"), gstyle=2)
+
+#---ZOOM NOTCH PATHWAY GENES RPC1 vs RPC2--------------------------------------------------
+visuz.GeneExpression.volcano(df=data, lfc='LogFC', pv='adj-pv', xlm=(-1.3,1.9,0.5),ylm=(0,10,2),
+                             geneid="Gene", lfc_thr=(0.10, 0.10), pv_thr=(0.05, 0.05),sign_line=True, dim=(5,5), r=600, axtickfontsize=12,
+                             genenames=("Itch","Dtx3","Hes1","Dll1","Mfng","Ctbp1","Notch1","Rbpj","Notch2","Dll4","Crebbp","Ncor2","Dll3","Psenen"), gstyle=2)
+
+visuz.GeneExpression.volcano(df=data, lfc='LogFC', pv='adj-pv', xlm=(-1.3,1.9,0.5),ylm=(0,10,2),
+                             geneid="Gene", lfc_thr=(0.10, 0.10), pv_thr=(0.05, 0.05),sign_line=True, dim=(5,5), r=600, axtickfontsize=12)
+
+
+#---WNT PATHWAY GENES RPC1 vs RPC2--------------------------------------------------
+visuz.GeneExpression.volcano(df=data, lfc='LogFC', pv='adj-pv', xlm=(-2,2,1),ylm=(0,60,10),
+                             geneid="Gene", lfc_thr=(0.10, 0.10), pv_thr=(0.05, 0.05),sign_line=True, dim=(5,5), r=600, axtickfontsize=12,
+                             genenames=("Bambi","Serpinf1","Jun","Ccnd1","Rbx1","Cacybp","Ctbp1","Cby1","Crebbp","Fzd3","Ctnnb1","Ruvbl1","Ccdc88c"), gstyle=2)
