@@ -1,9 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Tue Oct  5 10:12:51 2021
-
-@author: boulanb
-"""
 
 import os
 import numpy as np
@@ -302,16 +296,6 @@ visuz.GeneExpression.volcano(df=variable_genes, lfc='log', pv='pva', xlm=(-2,2,1
                              geneid="name", lfc_thr=(0.10, 0.10), pv_thr=(0.06, 0.06),sign_line=True, dim=(5,5), r=600, axtickfontsize=12,
                              genenames=("Notch2","Hes1","Psenen","Tle4","Dvl3"), gstyle=2)
 
-#---WNT PATHWAY GENES RPC dHET vs dKO---------------------------------------------------------------------------------------------------------------------------------
-visuz.GeneExpression.volcano(df=variable_genes, lfc='log', pv='pva', xlm=(-2,2,1),ylm=(0,80,10),
-                             geneid="name", lfc_thr=(0.10, 0.10), pv_thr=(0.05, 0.05),sign_line=True, dim=(5,5), r=600, axtickfontsize=12,
-                             genenames=("Bambi","Serpinf1","Jun","Ccnd1","Rbx1","Cacybp","Ctbp1","Cby1","Crebbp","Fzd3","Ctnnb1","Ruvbl1","Ccdc88c"), gstyle=2)
-
-#--ZOOM-WNT PATHWAY GENES RPC dHET vs dKO---------------------------------------------------------------------------------------------------------------------------------
-visuz.GeneExpression.volcano(df=variable_genes, lfc='log', pv='pva', xlm=(-2,2,1),ylm=(0,11,5),
-                             geneid="name", lfc_thr=(0.10, 0.10), pv_thr=(0.06, 0.06),sign_line=True, dim=(5,5), r=600, axtickfontsize=12,
-                             genenames=("Bambi","Serpinf1","Jun","Ccnd1","Rbx1","Cacybp","Ctbp1","Cby1","Crebbp","Fzd3","Ctnnb1","Ruvbl1","Ccdc88c"), gstyle=2)
-
 
 #------------------------------------------------------------------------------------------------------------------------------------
 #Volcano RPC1 vs RPC2......---------------------------------
@@ -355,9 +339,3 @@ visuz.GeneExpression.volcano(df=data, lfc='LogFC', pv='adj-pv', xlm=(-1.3,1.9,0.
 
 visuz.GeneExpression.volcano(df=data, lfc='LogFC', pv='adj-pv', xlm=(-1.3,1.9,0.5),ylm=(0,10,2),
                              geneid="Gene", lfc_thr=(0.10, 0.10), pv_thr=(0.05, 0.05),sign_line=True, dim=(5,5), r=600, axtickfontsize=12)
-
-
-#---WNT PATHWAY GENES RPC1 vs RPC2--------------------------------------------------
-visuz.GeneExpression.volcano(df=data, lfc='LogFC', pv='adj-pv', xlm=(-2,2,1),ylm=(0,60,10),
-                             geneid="Gene", lfc_thr=(0.10, 0.10), pv_thr=(0.05, 0.05),sign_line=True, dim=(5,5), r=600, axtickfontsize=12,
-                             genenames=("Bambi","Serpinf1","Jun","Ccnd1","Rbx1","Cacybp","Ctbp1","Cby1","Crebbp","Fzd3","Ctnnb1","Ruvbl1","Ccdc88c"), gstyle=2)
